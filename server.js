@@ -67,16 +67,16 @@ const PORT_HEX_PAIRS = [
 
 function generateRandomPorts() {
   const portTypes = [
-    { type: '3:1', label: '一般港 (3:1)', img: 'img/port-3to1.png' },
-    { type: '3:1', label: '一般港 (3:1)', img: 'img/port-3to1.png' },
-    { type: '3:1', label: '一般港 (3:1)', img: 'img/port-3to1.png' },
-    { type: '3:1', label: '一般港 (3:1)', img: 'img/port-3to1.png' },
-    { type: '3:1', label: '一般港 (3:1)', img: 'img/port-3to1.png' },
-    { type: '2:1_wood', label: '木材港 (2:1)', resource: 'wood', img: 'img/port-wood.png' },
-    { type: '2:1_brick', label: '煉瓦港 (2:1)', resource: 'brick', img: 'img/port-brick.png' },
-    { type: '2:1_wool', label: '羊毛港 (2:1)', resource: 'wool', img: 'img/port-wool.png' },
-    { type: '2:1_wheat', label: '小麦港 (2:1)', resource: 'wheat', img: 'img/port-wheat.png' },
-    { type: '2:1_ore', label: '鉱石港 (2:1)', resource: 'ore', img: 'img/port-ore.png' }
+    { type: '3:1', label: '一般港 (3:1)', img: 'static/img/port-3to1.png' },
+    { type: '3:1', label: '一般港 (3:1)', img: 'static/img/port-3to1.png' },
+    { type: '3:1', label: '一般港 (3:1)', img: 'static/img/port-3to1.png' },
+    { type: '3:1', label: '一般港 (3:1)', img: 'static/img/port-3to1.png' },
+    { type: '3:1', label: '一般港 (3:1)', img: 'static/img/port-3to1.png' },
+    { type: '2:1_wood', label: '木材港 (2:1)', resource: 'wood', img: 'static/img/port-wood.png' },
+    { type: '2:1_brick', label: '煉瓦港 (2:1)', resource: 'brick', img: 'static/img/port-brick.png' },
+    { type: '2:1_wool', label: '羊毛港 (2:1)', resource: 'wool', img: 'static/img/port-wool.png' },
+    { type: '2:1_wheat', label: '小麦港 (2:1)', resource: 'wheat', img: 'static/img/port-wheat.png' },
+    { type: '2:1_ore', label: '鉱石港 (2:1)', resource: 'ore', img: 'static/img/port-ore.png' }
   ];
 
   for (let i = portTypes.length - 1; i > 0; i--) {
