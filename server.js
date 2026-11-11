@@ -61,6 +61,18 @@ function shuffle(array) {
   return arr;
 }
 
+// カタン公式構成の発展カード山札生成（計25枚）
+function generateDevCardDeck() {
+  const deck = [
+    ...Array(14).fill('knight'),
+    ...Array(5).fill('victoryPoint'),
+    ...Array(2).fill('roadBuilding'),
+    ...Array(2).fill('yearOfPlenty'),
+    ...Array(2).fill('monopoly')
+  ];
+  return shuffle(deck);
+}
+
 function generateCatanBoard() {
   const shuffledResources = shuffle(TILE_RESOURCES);
   const shuffledNumbers = shuffle(TILE_NUMBERS);
@@ -103,12 +115,14 @@ function generateCatanBoard() {
 let gameState = {
   players: [],
   board: null,
+  devCardDeck: [],
   phase: 'LOBBY',
   turnIndex: 0,
   turnCount: 1,
   hasRolled: false,
   isMovingRobber: false,
   setupStep: 0,
+  currentTrade: null,
   achievements: {
     longestRoadPlayerId: null,
     longestRoadLength: 4,
@@ -157,17 +171,18 @@ io.on('connection', (socket) => {
     });
   });
 
-  // ② ゲーム開始ボタン処理
+  // ② ゲーム開始処理
   socket.on('startGame', () => {
     if (gameState.players.length < 2) return;
 
     const newBoard = generateCatanBoard();
     gameState.board = newBoard;
     gameState.robberHexId = newBoard.robberHexId;
+    gameState.devCardDeck = generateDevCardDeck(); // 発展カード山札を生成
     gameState.phase = 'INITIAL_SETUP';
     gameState.setupPhase = 'SETTLEMENT';
     gameState.turnIndex = 0;
-    gameState.setupStep = 0; // ★ 再スタート用に明示的に初期化
+    gameState.setupStep = 0;
 
     console.log('[開始] Web Catan ゲームが開始されました！');
     io.emit('gameStarted', gameState);
@@ -212,7 +227,7 @@ io.on('connection', (socket) => {
       } else {
         gameState.turnIndex = (2 * n - 1) - step;
       }
-        gameState.setupPhase = 'SETTLEMENT';
+      gameState.setupPhase = 'SETTLEMENT';
     } else {
       gameState.phase = 'INITIAL_RESOURCE_SELECT';
       gameState.turnIndex = 0;
@@ -245,7 +260,7 @@ io.on('connection', (socket) => {
     io.emit('gameStateUpdate', gameState);
   });
 
-  // ③ サイコロを振る
+  // ③ サイコロを振る（獲得資源ログ生成付き）
   socket.on('rollDice', () => {
     const p = gameState.players[gameState.turnIndex];
     if (!p || p.id !== socket.id || gameState.hasRolled) return;
@@ -255,6 +270,7 @@ io.on('connection', (socket) => {
     const sum = d1 + d2;
 
     gameState.hasRolled = true;
+    const gainedSummary = [];
 
     if (sum === 7) {
       gameState.isMovingRobber = true;
@@ -265,7 +281,14 @@ io.on('connection', (socket) => {
             (player.buildings || []).forEach(b => {
               if (b.touchingHexIds && b.touchingHexIds.includes(hex.id)) {
                 const count = (b.type === 'city') ? 2 : 1;
-                player.resources[hex.resource] += count;
+                player.resources[hex.resource] = (player.resources[hex.resource] || 0) + count;
+
+                let pLog = gainedSummary.find(g => g.playerId === player.id);
+                if (!pLog) {
+                  pLog = { playerId: player.id, name: player.name, color: player.color, gained: {} };
+                  gainedSummary.push(pLog);
+                }
+                pLog.gained[hex.resource] = (pLog.gained[hex.resource] || 0) + count;
               }
             });
           });
@@ -273,9 +296,10 @@ io.on('connection', (socket) => {
       });
     }
 
-    io.emit('diceRolled', { d1, d2, sum, gameState });
+    io.emit('diceRolled', { d1, d2, sum, gainedSummary, gameState });
   });
-// ⑥ 銀行・港トレード処理
+
+  // ⑥ 銀行・港トレード処理
   socket.on('bankTrade', (data) => {
     const p = gameState.players[gameState.turnIndex];
     if (!p || p.id !== socket.id || !gameState.hasRolled || gameState.phase !== 'PLAYING') return;
@@ -290,10 +314,11 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ⑦ プレイヤー間トレード提案
+  // ⑦ プレイヤー間トレード提案（1対1限定）
   socket.on('proposeTrade', (data) => {
     const p = gameState.players[gameState.turnIndex];
     if (!p || p.id !== socket.id || !gameState.hasRolled || gameState.phase !== 'PLAYING') return;
+    if (!data.targetPlayerId || data.targetPlayerId === 'ALL') return;
 
     gameState.currentTrade = {
       senderId: socket.id,
@@ -303,11 +328,7 @@ io.on('connection', (socket) => {
       get: data.get
     };
 
-    if (data.targetPlayerId === 'ALL') {
-      socket.broadcast.emit('tradeProposalReceived', gameState.currentTrade);
-    } else {
-      io.to(data.targetPlayerId).emit('tradeProposalReceived', gameState.currentTrade);
-    }
+    io.to(data.targetPlayerId).emit('tradeProposalReceived', gameState.currentTrade);
   });
 
   // ⑧ トレード承認（成立）
@@ -322,7 +343,6 @@ io.on('connection', (socket) => {
     const give = gameState.currentTrade.give;
     const get = gameState.currentTrade.get;
 
-    // 互いの所持資源チェック
     let canTrade = true;
     for (let res in give) { if ((sender.resources[res] || 0) < give[res]) canTrade = false; }
     for (let res in get) { if ((receiver.resources[res] || 0) < get[res]) canTrade = false; }
@@ -366,6 +386,7 @@ io.on('connection', (socket) => {
 
     io.to(originalSenderId).emit('tradeProposalReceived', gameState.currentTrade);
   });
+
   // ④ ターン終了
   socket.on('endTurn', () => {
     const p = gameState.players[gameState.turnIndex];
@@ -379,29 +400,56 @@ io.on('connection', (socket) => {
     io.emit('gameStateUpdate', gameState);
   });
 
-  // ⑤ 建築処理（街道・開拓地・都市・発展カード）
+  // ⑤ 建築・発展カード購入処理
   socket.on('buildStructure', (data) => {
     const player = gameState.players.find(p => p.id === socket.id);
     if (!player) return;
 
     if (data.type === 'settlement') {
-      player.resources.wood -= 1;
-      player.resources.brick -= 1;
-      player.resources.wool -= 1;
-      player.resources.wheat -= 1;
-      player.buildings.push({ type: 'settlement', vertexId: data.vertexId, touchingHexIds: data.extraData?.touchingHexIds || [] });
-      player.victoryPoints += 1;
+      if (player.resources.wood >= 1 && player.resources.brick >= 1 && player.resources.wool >= 1 && player.resources.wheat >= 1) {
+        player.resources.wood -= 1;
+        player.resources.brick -= 1;
+        player.resources.wool -= 1;
+        player.resources.wheat -= 1;
+        player.buildings.push({ type: 'settlement', vertexId: data.vertexId, touchingHexIds: data.extraData?.touchingHexIds || [] });
+        player.victoryPoints += 1;
+      }
     } else if (data.type === 'city') {
-      player.resources.ore -= 3;
-      player.resources.wheat -= 2;
-      const bIdx = player.buildings.findIndex(b => b.vertexId === data.vertexId && b.type === 'settlement');
-      if (bIdx !== -1) player.buildings.splice(bIdx, 1);
-      player.buildings.push({ type: 'city', vertexId: data.vertexId });
-      player.victoryPoints += 1;
+      if (player.resources.ore >= 3 && player.resources.wheat >= 2) {
+        player.resources.ore -= 3;
+        player.resources.wheat -= 2;
+        const bIdx = player.buildings.findIndex(b => b.vertexId === data.vertexId && b.type === 'settlement');
+        if (bIdx !== -1) player.buildings.splice(bIdx, 1);
+        player.buildings.push({ type: 'city', vertexId: data.vertexId });
+        player.victoryPoints += 1;
+      }
     } else if (data.type === 'road') {
-      player.resources.wood -= 1;
-      player.resources.brick -= 1;
-      player.roads.push({ edgeId: data.edgeId });
+      if (player.resources.wood >= 1 && player.resources.brick >= 1) {
+        player.resources.wood -= 1;
+        player.resources.brick -= 1;
+        player.roads.push({ edgeId: data.edgeId });
+      }
+    } else if (data.type === 'devCard') { // 発展カードの購入
+      if (player.resources.ore >= 1 && player.resources.wheat >= 1 && player.resources.wool >= 1) {
+        if (gameState.devCardDeck && gameState.devCardDeck.length > 0) {
+          player.resources.ore -= 1;
+          player.resources.wheat -= 1;
+          player.resources.wool -= 1;
+
+          const drawnType = gameState.devCardDeck.pop();
+          player.devCards.push({
+            id: `dev_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+            type: drawnType,
+            boughtTurn: gameState.turnCount
+          });
+        } else {
+          socket.emit('errorMsg', '発展カードの山札が残っていません。');
+          return;
+        }
+      } else {
+        socket.emit('errorMsg', '資源が不足しています（鉱石1, 小麦1, 羊毛1）。');
+        return;
+      }
     }
 
     io.emit('gameStateUpdate', gameState);
