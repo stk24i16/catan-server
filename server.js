@@ -31,7 +31,7 @@ const TILE_RESOURCES = [
 // 数字トークン（計18個 / 砂漠を除く）
 const TILE_NUMBERS = [2, 3, 3, 4, 4, 5, 5, 6, 6, 8, 8, 9, 9, 10, 10, 11, 11, 12];
 
-// 港の定義（PythonAnywhere側の静的ファイルパスに合わせて指定）
+// 港の定義
 const PORT_TYPES = [
   { type: '3:1', label: '一般港 (3:1)', img: '/static/catan/img/port-3to1.png' },
   { type: '3:1', label: '一般港 (3:1)', img: '/static/catan/img/port-3to1.png' },
@@ -52,7 +52,6 @@ const PORT_LOCATIONS = [
   { hexId: 15, corner: 3 }, { hexId: 17, corner: 4 }, { hexId: 18, corner: 3 }
 ];
 
-// 配列のランダムシャッフル関数（フィッシャー・イェーツ）
 function shuffle(array) {
   const arr = [...array];
   for (let i = arr.length - 1; i > 0; i--) {
@@ -62,7 +61,6 @@ function shuffle(array) {
   return arr;
 }
 
-// カタンの盤面（Hex 19枚 + 港）を初期化・生成する関数
 function generateCatanBoard() {
   const shuffledResources = shuffle(TILE_RESOURCES);
   const shuffledNumbers = shuffle(TILE_NUMBERS);
@@ -74,19 +72,18 @@ function generateCatanBoard() {
   const hexes = shuffledResources.map((resource, id) => {
     let number = null;
     if (resource === 'desert') {
-      robberHexId = id; // 盗賊の初期位置は砂漠タイル
+      robberHexId = id;
     } else {
       number = shuffledNumbers[numberIdx++];
     }
 
     return {
       id: id,
-      resource: resource, // wood, brick, wool, wheat, ore, desert
+      resource: resource,
       number: number
     };
   });
 
-  // 港の結合
   const ports = PORT_LOCATIONS.map((loc, idx) => ({
     ...loc,
     ...shuffledPorts[idx]
@@ -106,11 +103,12 @@ function generateCatanBoard() {
 let gameState = {
   players: [],
   board: null,
-  phase: 'LOBBY', // LOBBY, INITIAL_SETUP, PLAYING, GAME_OVER
+  phase: 'LOBBY',
   turnIndex: 0,
   turnCount: 1,
   hasRolled: false,
   isMovingRobber: false,
+  setupStep: 0,
   achievements: {
     longestRoadPlayerId: null,
     longestRoadLength: 4,
@@ -155,7 +153,7 @@ io.on('connection', (socket) => {
 
     io.emit('lobbyUpdate', {
       players: gameState.players,
-      canStart: gameState.players.length >= 2 // 2人以上で開始可能（テスト時便利）
+      canStart: gameState.players.length >= 2
     });
   });
 
@@ -163,16 +161,88 @@ io.on('connection', (socket) => {
   socket.on('startGame', () => {
     if (gameState.players.length < 2) return;
 
-    // 盤面を新規生成（Hexタイル＆港）
     const newBoard = generateCatanBoard();
     gameState.board = newBoard;
     gameState.robberHexId = newBoard.robberHexId;
     gameState.phase = 'INITIAL_SETUP';
     gameState.setupPhase = 'SETTLEMENT';
     gameState.turnIndex = 0;
+    gameState.setupStep = 0; // ★ 再スタート用に明示的に初期化
 
     console.log('[開始] Web Catan ゲームが開始されました！');
     io.emit('gameStarted', gameState);
+  });
+
+  // 初期開拓地の配置処理
+  socket.on('placeInitialSettlement', (data) => {
+    const p = gameState.players[gameState.turnIndex];
+    if (!p || p.id !== socket.id || gameState.phase !== 'INITIAL_SETUP' || gameState.setupPhase !== 'SETTLEMENT') return;
+
+    gameState.pendingSettlement = {
+      vertexId: data.vertexId,
+      touchingHexIds: data.touchingHexIds || []
+    };
+    gameState.setupPhase = 'ROAD';
+
+    io.emit('gameStateUpdate', gameState);
+  });
+
+  // 初期街道の配置処理
+  socket.on('placeInitialRoad', (data) => {
+    const p = gameState.players[gameState.turnIndex];
+    if (!p || p.id !== socket.id || gameState.phase !== 'INITIAL_SETUP' || gameState.setupPhase !== 'ROAD' || !gameState.pendingSettlement) return;
+
+    p.buildings.push({
+      type: 'settlement',
+      vertexId: gameState.pendingSettlement.vertexId,
+      touchingHexIds: gameState.pendingSettlement.touchingHexIds
+    });
+    p.roads.push({ edgeId: data.edgeId });
+    p.victoryPoints = (p.victoryPoints || 0) + 1;
+
+    gameState.pendingSettlement = null;
+    gameState.setupStep = (gameState.setupStep || 0) + 1;
+
+    const totalSteps = gameState.players.length * 2;
+    if (gameState.setupStep < totalSteps) {
+      const n = gameState.players.length;
+      const step = gameState.setupStep;
+      if (step < n) {
+        gameState.turnIndex = step;
+      } else {
+        gameState.turnIndex = (2 * n - 1) - step;
+      }
+        gameState.setupPhase = 'SETTLEMENT';
+    } else {
+      gameState.phase = 'INITIAL_RESOURCE_SELECT';
+      gameState.turnIndex = 0;
+    }
+
+    io.emit('gameStateUpdate', gameState);
+  });
+
+  // 初期資源の獲得処理
+  socket.on('claimInitialResources', (data) => {
+    const player = gameState.players.find(p => p.id === socket.id);
+    if (!player || player.receivedInitialResources) return;
+
+    const b = player.buildings.find(b => b.vertexId === data.vertexId);
+    if (b && b.touchingHexIds) {
+      b.touchingHexIds.forEach(hexId => {
+        const hex = gameState.board.hexes.find(h => h.id === hexId);
+        if (hex && hex.resource && hex.resource !== 'desert') {
+          player.resources[hex.resource] = (player.resources[hex.resource] || 0) + 1;
+        }
+      });
+    }
+    player.receivedInitialResources = true;
+
+    if (gameState.players.every(p => p.receivedInitialResources)) {
+      gameState.phase = 'PLAYING';
+      gameState.turnIndex = 0;
+    }
+
+    io.emit('gameStateUpdate', gameState);
   });
 
   // ③ サイコロを振る
@@ -186,11 +256,9 @@ io.on('connection', (socket) => {
 
     gameState.hasRolled = true;
 
-    // 7が出た場合は盗賊移動モードへ
     if (sum === 7) {
       gameState.isMovingRobber = true;
     } else {
-      // 該当数字タイルの資源分配処理
       gameState.board.hexes.forEach(hex => {
         if (hex.number === sum && hex.id !== gameState.robberHexId) {
           gameState.players.forEach(player => {
@@ -254,7 +322,6 @@ io.on('connection', (socket) => {
     console.log(`[切断] ユーザー切断: ${socket.id}`);
     gameState.players = gameState.players.filter(p => p.id !== socket.id);
     if (gameState.players.length === 0) {
-      // プレイヤーが全員いなくなったら初期化
       gameState.phase = 'LOBBY';
     } else {
       io.emit('lobbyUpdate', { players: gameState.players, canStart: gameState.players.length >= 2 });
