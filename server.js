@@ -275,7 +275,97 @@ io.on('connection', (socket) => {
 
     io.emit('diceRolled', { d1, d2, sum, gameState });
   });
+// ⑥ 銀行・港トレード処理
+  socket.on('bankTrade', (data) => {
+    const p = gameState.players[gameState.turnIndex];
+    if (!p || p.id !== socket.id || !gameState.hasRolled || gameState.phase !== 'PLAYING') return;
 
+    const { giveRes, getRes, ratio } = data;
+    if (p.resources[giveRes] >= ratio) {
+      p.resources[giveRes] -= ratio;
+      p.resources[getRes] = (p.resources[getRes] || 0) + 1;
+      io.emit('gameStateUpdate', gameState);
+    } else {
+      socket.emit('errorMsg', '交換に必要な資源が不足しています。');
+    }
+  });
+
+  // ⑦ プレイヤー間トレード提案
+  socket.on('proposeTrade', (data) => {
+    const p = gameState.players[gameState.turnIndex];
+    if (!p || p.id !== socket.id || !gameState.hasRolled || gameState.phase !== 'PLAYING') return;
+
+    gameState.currentTrade = {
+      senderId: socket.id,
+      senderName: p.name,
+      targetPlayerId: data.targetPlayerId,
+      give: data.give,
+      get: data.get
+    };
+
+    if (data.targetPlayerId === 'ALL') {
+      socket.broadcast.emit('tradeProposalReceived', gameState.currentTrade);
+    } else {
+      io.to(data.targetPlayerId).emit('tradeProposalReceived', gameState.currentTrade);
+    }
+  });
+
+  // ⑧ トレード承認（成立）
+  socket.on('acceptTrade', () => {
+    if (!gameState.currentTrade) return;
+
+    const sender = gameState.players.find(p => p.id === gameState.currentTrade.senderId);
+    const receiver = gameState.players.find(p => p.id === socket.id);
+
+    if (!sender || !receiver) return;
+
+    const give = gameState.currentTrade.give;
+    const get = gameState.currentTrade.get;
+
+    // 互いの所持資源チェック
+    let canTrade = true;
+    for (let res in give) { if ((sender.resources[res] || 0) < give[res]) canTrade = false; }
+    for (let res in get) { if ((receiver.resources[res] || 0) < get[res]) canTrade = false; }
+
+    if (canTrade) {
+      for (let res in give) {
+        sender.resources[res] -= give[res];
+        receiver.resources[res] += give[res];
+      }
+      for (let res in get) {
+        receiver.resources[res] -= get[res];
+        sender.resources[res] += get[res];
+      }
+      gameState.currentTrade = null;
+      io.emit('closeTradePanel');
+      io.emit('gameStateUpdate', gameState);
+    } else {
+      socket.emit('errorMsg', 'トレードに必要な資源が不足しています。');
+    }
+  });
+
+  // ⑨ トレード拒否
+  socket.on('rejectTrade', () => {
+    gameState.currentTrade = null;
+    io.emit('closeTradePanel');
+  });
+
+  // ⑩ 対案（カウンターオファー）送信
+  socket.on('counterTradeProposal', (data) => {
+    if (!gameState.currentTrade) return;
+    const originalSenderId = gameState.currentTrade.senderId;
+    const counterSender = gameState.players.find(p => p.id === socket.id);
+
+    gameState.currentTrade = {
+      senderId: socket.id,
+      senderName: `${counterSender.name} (対案)`,
+      targetPlayerId: originalSenderId,
+      give: data.give,
+      get: data.get
+    };
+
+    io.to(originalSenderId).emit('tradeProposalReceived', gameState.currentTrade);
+  });
   // ④ ターン終了
   socket.on('endTurn', () => {
     const p = gameState.players[gameState.turnIndex];
